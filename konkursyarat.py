@@ -1005,7 +1005,6 @@ class KonkursBot:
             msg = "Batl yaratish boshlandi\n"
             msg += "Yutuq nomi nima \n"
             msg += "Yozing \n"
-            msg += "Musol uchun bu 👆🏻\n\n"
             msg += "❌ Bekor qilish uchun /cancel ni bosing."
 
             keyboard = {

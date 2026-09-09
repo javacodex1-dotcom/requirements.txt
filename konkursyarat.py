@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # ==================== SOZLAMALAR ====================
 GLOBAL_CONFIG = {
     'bot_token': '8782186185:AAGUzhiMa12n2txweVjmTTViYrn6X935i7Q',
-    'bot_username': 'konkursyaratbot',
+    'bot_username': 'KonkursYaratBot',
     'admin_id': 6968399046,
     'mongo_uri': 'mongodb+srv://djsjjuebbd_db_user:java2011@cluster0.tboiqeb.mongodb.net/?appName=Cluster0',
     'db_name': 'konkurs_bot_db'
@@ -687,6 +687,11 @@ class KonkursBot:
 
             join_url = f"https://t.me/{self.bot_username}?start=join_{contest_id}"
 
+            post_text = "<blockquote>🏆 <b>BATL Boshlandi🥳</b>\n\n"
+            post_text += "❗ Konkurs shartlari shu kanalga obuna bo'lish va do'stlaringiz sizga ovoz berishini so'rashdan iborat. Agar kanalga qo'shilib ovoz berib chiqib ketsa ovozi avtomatik olib tashlanadi ⛔\n\n"
+            post_text += "🎁 <b>Yutuq:</b> Sir 🤫\n\n"
+            post_text += "➕ Konkursga qo'shilish uchun quyidagi tugmani bosing 👇</blockquote>"
+
             keyboard = {
                 'inline_keyboard': [
                     [{'text': "🟢 Konkursga Qo'shilish ➕", 'url': join_url}],
@@ -694,9 +699,11 @@ class KonkursBot:
                 ]
             }
 
-            self.telegram_api('editMessageReplyMarkup', {
+            self.telegram_api('editMessageText', {
                 'chat_id': chat_id,
                 'message_id': message_id,
+                'text': post_text,
+                'parse_mode': 'HTML',
                 'reply_markup': json.dumps(keyboard)
             })
             return
@@ -760,8 +767,7 @@ class KonkursBot:
         chat_id = chat.get('id')
         chat_type = chat.get('type', 'private')
 
-        # XAVFSIZLIK FILTRI: Faqat shaxsiy (private) chatdagi xabarlarni qayta ishlaydi.
-        # Kanallar va guruhlardan kelgan xabarlar bot menusini ishga tushirmaydi!
+        # Kanal yoki guruhdan kelgan xabarlarni bot shaxsiy menyu sifatida qabul qilmasligi uchun filtr
         if chat_type != 'private':
             return
 
@@ -772,7 +778,6 @@ class KonkursBot:
         user_id = from_user['id']
         text = message.get('text', '').strip()
 
-        # State faqat user_id bo'yicha olinadi
         user_state = self.db.get_state(user_id)
 
         if text == '/cancel':
@@ -932,7 +937,7 @@ class KonkursBot:
         user_id = cb['from']['id']
         data = cb['data']
 
-        # XAVFSIZLIK: Kanaldagi post inline tugmalari bosilganda:
+        # Kanal yoki guruhdan kelgan callback query'larni tekshirish (Faqat Natijalar / konkurs tugmalariga ruxsat)
         if chat_type != 'private':
             if data.startswith('results_') or data.startswith('contest_'):
                 contest_id = int(''.join(filter(str.isdigit, data)) or 0)
@@ -989,18 +994,18 @@ class KonkursBot:
             else:
                 self.telegram_api('answerCallbackQuery', {
                     'callback_query_id': cb_id,
-                    'text': "⚠️ Ushbu bo'limdan foydalanish uchun botga shaxsiy xabar yuboring!",
+                    'text': "⚠️ Ushbu tugmadan foydalanish uchun botga shaxsiy xabar yuboring!",
                     'show_alert': True
                 })
                 return
 
-        # FAQAT SHAXSIY CHATDAGI CALLBACK QUERIES:
         if data == 'create_battle':
             self.db.set_state(user_id, 'awaiting_contest_prize')
 
             msg = "Batl yaratish boshlandi\n"
             msg += "Yutuq nomi nima \n"
             msg += "Yozing \n"
+            msg += "Musol uchun bu 👆🏻\n\n"
             msg += "❌ Bekor qilish uchun /cancel ni bosing."
 
             keyboard = {
@@ -1139,7 +1144,6 @@ class KonkursBot:
 
         if data == 'check_battle':
             self.db.set_state(user_id, 'awaiting_check_channel')
-
             msg = "🔍 <b>OVOZ BATL TEKSHIRISH</b> 🔍\n\n"
             msg += "Iltimos, kanaldagi konkurs postini (#boshlash bilan boshlangan) forward qilib yuboring.\n\n"
             msg += "❌ Bekor qilish uchun /cancel yoki quyidagi tugmani bosing"
@@ -1379,6 +1383,11 @@ class KonkursBot:
 
             join_url = f"https://t.me/{self.bot_username}?start=join_{contest_id}"
 
+            post_text = "<blockquote>🏆 <b>BATL Boshlandi🥳</b>\n\n"
+            post_text += f"🎁 <b>Yutuq:</b> {prize}\n\n"
+            post_text += "❗ Konkurs shartlari shu kanalga obuna bo'lish va do'stlaringiz sizga ovoz berishini so'rashdan iborat. Agar kanalga qo'shilib ovoz berib chiqib ketsa ovozi avtomatik olib tashlanadi ⛔\n\n"
+            post_text += "➕ Konkursga qo'shilish uchun quyidagi tugmani bosing 👇</blockquote>"
+
             keyboard = {
                 'inline_keyboard': [
                     [{'text': "🟢 Konkursga Qo'shilish ➕", 'url': join_url}],
@@ -1386,9 +1395,11 @@ class KonkursBot:
                 ]
             }
 
-            self.telegram_api('editMessageReplyMarkup', {
+            self.telegram_api('editMessageText', {
                 'chat_id': target_channel_id,
                 'message_id': post_msg_id,
+                'text': post_text,
+                'parse_mode': 'HTML',
                 'reply_markup': json.dumps(keyboard)
             })
 
@@ -1751,8 +1762,8 @@ class KonkursBot:
 
     def update_contest_post(self, contest_id):
         """
-        Kanal postining MATNIGA TEGMASDAN faqat tugmalarni (reply_markup) yangilaydi!
-        Bu kanal postining o'zgarib ketishini to'liq oldini oladi.
+        Qatnashuvchilar qo'shilganda yoki ovozlar o'zgarganda xabarni yangilaydi.
+        Kiritilgan yutuq (va uning barcha premium emojilari) bazadan olinadi va hech qachon yo'qolmaydi!
         """
         try:
             contest = self.db.get_contest_by_id(contest_id)
@@ -1761,6 +1772,7 @@ class KonkursBot:
 
             participants = self.db.get_contest_participants(contest_id)
             join_url = f"https://t.me/{self.bot_username}?start=join_{contest_id}"
+            prize = contest.get('prize', 'Sir 🤫')
 
             keyboard = {'inline_keyboard': []}
 
@@ -1781,10 +1793,17 @@ class KonkursBot:
                 {'text': "🔴 Natijalar 📊", 'callback_data': f"results_{contest_id}"}
             ])
 
-            # Faqat va faqat tugmalarni (keyboard) yangilaymiz!
-            self.telegram_api('editMessageReplyMarkup', {
+            # Post matnida yutuq har doim saqlanib turadi
+            post_text = "<blockquote>🏆 <b>BATL Boshlandi🥳</b>\n\n"
+            post_text += f"🎁 <b>Yutuq:</b> {prize}\n\n"
+            post_text += "❗ Konkurs shartlari shu kanalga obuna bo'lish va do'stlaringiz sizga ovoz berishini so'rashdan iborat. Agar kanalga qo'shilib ovoz berib chiqib ketsa ovozi avtomatik olib tashlanadi ⛔\n\n"
+            post_text += "➕ Konkursga qo'shilish uchun quyidagi tugmani bosing 👇</blockquote>"
+
+            self.telegram_api('editMessageText', {
                 'chat_id': contest['channel_id'],
                 'message_id': contest['post_message_id'],
+                'text': post_text,
+                'parse_mode': 'HTML',
                 'reply_markup': json.dumps(keyboard)
             })
         except Exception as e:
@@ -2183,7 +2202,7 @@ class KonkursBot:
                 url = ch['invite_link']
 
             keyboard['inline_keyboard'].append([
-                {'text': f"📢 {c_name}", 'url': url}
+                {'text': "📢 " + c_name, 'url': url}
             ])
 
         keyboard['inline_keyboard'].append([

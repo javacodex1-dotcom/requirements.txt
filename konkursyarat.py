@@ -710,8 +710,8 @@ class KonkursBot:
 
             keyboard = {
                 'inline_keyboard': [
-                    [{'text': "🟢 Konkursga Qo'shilish ➕", 'url': join_url}],
-                    [{'text': "🔴 Natijalar 📊", 'callback_data': f"results_{contest_id}"}]
+                    [{'text': " Konkursga Qo'shilish ➕", 'url': join_url}],
+                    [{'text': " Natijalar 📊", 'callback_data': f"results_{contest_id}"}]
                 ]
             }
 
@@ -965,8 +965,7 @@ class KonkursBot:
 
             msg = "Batl yaratish boshlandi\n"
             msg += "Yutuq nomi nima \n"
-            msg += "Yozing \n"
-            msg += "Musol uchun bu 👆🏻\n\n"
+            msg += "Yozing \n".
             msg += "❌ Bekor qilish uchun /cancel ni bosing."
 
             keyboard = {

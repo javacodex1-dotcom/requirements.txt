@@ -20,14 +20,11 @@ GLOBAL_CONFIG = {
     'db_name': 'konkurs_bot_db'
 }
 
-# ==================== KO'P BOSHQIChLI STATE XAVFSIZLIGI (RAM + FILE SYSTEM) ====================
-# Gunicorn ko'p protsessorli (multi-worker) rejimda ishlaganda ham holat (state) yo'qolmasligi uchun 
-# 3-bosqichli (RAM -> LOCAL FILE -> MONGODB) o'ta xavfsiz tizimni joriy qilamiz.
+# ==================== KESHLASH VA XAVFSIZLIK ====================
 MEMORY_STATES = {}
 STATE_FILE = "local_states.json"
 
 def save_local_state_file(user_id, state, temp_data):
-    """Holatni mahalliy faylga yozadi (Gunicorn workerlari o'rtasida bo'lishish uchun)"""
     try:
         data = {}
         if os.path.exists(STATE_FILE):
@@ -47,7 +44,6 @@ def save_local_state_file(user_id, state, temp_data):
         logging.error(f"Local state file write error: {e}")
 
 def load_local_state_file(user_id):
-    """Mahalliy fayldan holatni o'qiydi"""
     try:
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, 'r') as f:
@@ -60,7 +56,6 @@ def load_local_state_file(user_id):
     return None
 
 def delete_local_state_file(user_id):
-    """Mahalliy fayldan holatni tozalaydi"""
     try:
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, 'r') as f:
@@ -77,11 +72,6 @@ app = Flask(__name__)
 
 # ==================== FORMATTING HELPER FOR PREMIUM EMOJIS ====================
 def entities_to_html(text, entities):
-    """
-    Telegram xabaridagi barcha formatlash va premium emojilarni (entities) 
-    HTML formatga o'tkazadi. UTF-16 offsetlaridan foydalanilganligi sababli 
-    hech qanday offset siljishi yoki xatolik yuz bermaydi.
-    """
     if not text:
         return ""
     if not entities or not isinstance(entities, list):
@@ -460,31 +450,19 @@ class Database:
         return bool(res)
 
     def set_state(self, user_id, state, temp_data=None):
-        """
-        Ziddiyatlarni butunlay yo'q qilish uchun eski holatni ham o'chiradi 
-        va 3 ta mustaqil joyda (RAM, Local File, MongoDB) holatni yangilaydi.
-        """
         user_id_str = str(user_id)
-        
-        # 1. RAM Keshga yozish
         MEMORY_STATES[user_id_str] = {
             "state": state,
             "temp_data": temp_data
         }
-        
-        # 2. Local Faylga yozish
         save_local_state_file(user_id_str, state, temp_data)
-        
-        # 3. MongoDB bazasiga ziddiyatsiz toza holatda yozish
         try:
-            # Duplicate key errorlarni butunlay bartaraf qilish uchun avval o'chiramiz
             self.db.user_states.delete_many({
                 "$or": [
                     {"user_id": user_id_str},
                     {"user_id": int(user_id) if str(user_id).isdigit() else user_id}
                 ]
             })
-            
             temp_data_json = json.dumps(temp_data) if isinstance(temp_data, (dict, list)) else temp_data
             self.db.user_states.insert_one({
                 "user_id": user_id_str,
@@ -496,13 +474,7 @@ class Database:
             logging.error(f"DB set_state error: {e}")
 
     def get_state(self, user_id):
-        """
-        Holatni RAM, Local File va MongoDB dan qidirib topadi.
-        Turli tipdagi (str/int) ziddiyatlarni 100% bartaraf etadi.
-        """
         user_id_str = str(user_id)
-        
-        # 1. RAM Keshni tekshirish
         if user_id_str in MEMORY_STATES:
             mem = MEMORY_STATES[user_id_str]
             return {
@@ -512,7 +484,6 @@ class Database:
                 "temp_data_decoded": mem.get("temp_data") if isinstance(mem.get("temp_data"), dict) else None
             }
         
-        # 2. Local Fayl Tizimini tekshirish (Workerlar o'rtasida ishonchli bog'liqlik)
         local_val = load_local_state_file(user_id_str)
         if local_val:
             MEMORY_STATES[user_id_str] = {
@@ -526,7 +497,6 @@ class Database:
                 "temp_data_decoded": local_val["temp_data"] if isinstance(local_val["temp_data"], dict) else None
             }
 
-        # 3. MongoDB Bazadan qidirish
         try:
             query = {
                 "$or": [
@@ -543,7 +513,6 @@ class Database:
                     except Exception:
                         td_decoded = row['temp_data']
                 
-                # RAM va Faylni sinxronlash
                 MEMORY_STATES[user_id_str] = {
                     "state": row['state'],
                     "temp_data": td_decoded
@@ -559,15 +528,9 @@ class Database:
 
     def clear_state(self, user_id):
         user_id_str = str(user_id)
-        
-        # 1. RAM dan o'chirish
         if user_id_str in MEMORY_STATES:
             del MEMORY_STATES[user_id_str]
-            
-        # 2. Local Fayldan o'chirish
         delete_local_state_file(user_id_str)
-        
-        # 3. MongoDB dan o'chirish
         try:
             query = {
                 "$or": [
@@ -816,7 +779,14 @@ class KonkursBot:
             return
 
     def handle_message(self, message):
-        chat_id = message['chat']['id']
+        chat = message.get('chat', {})
+        chat_id = chat.get('id')
+        chat_type = chat.get('type', 'private')
+
+        # Xavfsizlik filtri: Agar xabar kanal (channel) yoki guruhdan kelsa, shaxsiy chat emasligi uchun e'tiborga olinmaydi
+        if chat_type != 'private':
+            return
+
         from_user = message.get('from')
         if not from_user:
             return
@@ -824,7 +794,6 @@ class KonkursBot:
         user_id = from_user['id']
         text = message.get('text', '').strip()
 
-        # Islomiy/Doimiy ishonchli holatni bazadan & RAM dan & Mahalliy fayldan olish
         user_state = self.db.get_state(user_id) or self.db.get_state(chat_id)
 
         if text == '/cancel':
@@ -841,7 +810,6 @@ class KonkursBot:
             self.send_admin_panel(chat_id)
             return
 
-        # AGAR FOYDALANUVCHI STATE HOLATIDA BO'LSA
         if user_state and (not text or not text.startswith('/start')):
             state_name = user_state.get('state')
 
@@ -876,57 +844,7 @@ class KonkursBot:
             return
 
         if '#end' in text.lower():
-            reply_msg_id = message.get('reply_to_message', {}).get('message_id')
-            contest = None
-
-            if reply_msg_id:
-                contest = self.db.get_contest_by_post_message(chat_id, reply_msg_id)
-
-            if not contest:
-                active_contest = self.db.get_active_contest_by_channel(chat_id)
-                if active_contest and active_contest.get('post_message_id') == reply_msg_id:
-                    contest = active_contest
-
-            if not contest:
-                self.telegram_api('sendMessage', {
-                    'chat_id': chat_id,
-                    'text': "⚠️ <b>Iltimos, konkursni yakunlash uchun aynan o'sha konkurs postiga reply (javob) qilib #end yuboring!</b>",
-                    'parse_mode': 'HTML',
-                    'reply_to_message_id': message['message_id']
-                })
-                return
-
-            self.telegram_api('deleteMessage', {
-                'chat_id': chat_id,
-                'message_id': message['message_id']
-            })
-
-            target_reply_id = contest.get('post_message_id') or reply_msg_id
-
-            if contest.get('status') == 'ended':
-                self.telegram_api('sendMessage', {
-                    'chat_id': chat_id,
-                    'text': "❌ <b>Ushbu konkurs allaqachon yakunlangan!</b>",
-                    'parse_mode': 'HTML',
-                    'reply_to_message_id': target_reply_id
-                })
-                return
-
-            contest_id = contest['id']
-            self.db.end_contest(contest_id)
-
-            participants = self.db.get_participants_by_contest(contest_id)
-            res_text = self.format_contest_results(participants)
-
-            send_params = {
-                'chat_id': chat_id,
-                'text': res_text,
-                'parse_mode': 'HTML'
-            }
-            if target_reply_id:
-                send_params['reply_to_message_id'] = target_reply_id
-
-            self.telegram_api('sendMessage', send_params)
+            self.send_main_menu(chat_id)
             return
 
         if text.startswith('/start'):
@@ -958,7 +876,6 @@ class KonkursBot:
             self.send_main_menu(chat_id)
             return
 
-        # Agar hech qanday holat yoki start bo'lmasa, asosiy menyu chiqsin
         self.send_main_menu(chat_id)
 
     def send_main_menu(self, chat_id):
@@ -1033,13 +950,16 @@ class KonkursBot:
 
     def handle_callback_query(self, cb):
         cb_id = cb['id']
-        chat_id = cb['message']['chat']['id']
-        message_id = cb['message']['message_id']
+        message = cb.get('message', {})
+        chat = message.get('chat', {})
+        chat_id = chat.get('id')
+        chat_type = chat.get('type', 'private')
+
+        # Xavfsizlik: Kanaldagi inline tugmalar bosilsa (masalan results) ruxsat beriladi, lekin oddiy menyular faqat shaxsiy chatda ishlaydi
         user_id = cb['from']['id']
         data = cb['data']
 
         if data == 'create_battle':
-            # Holatni barcha workerlar uchun bo'linadigan tizimda xavfsiz sozlash
             self.db.set_state(user_id, 'awaiting_contest_prize')
             self.db.set_state(chat_id, 'awaiting_contest_prize')
 
@@ -1057,7 +977,7 @@ class KonkursBot:
 
             self.telegram_api('editMessageText', {
                 'chat_id': chat_id,
-                'message_id': message_id,
+                'message_id': message.get('message_id'),
                 'text': msg,
                 'parse_mode': 'HTML',
                 'reply_markup': json.dumps(keyboard)
@@ -1073,35 +993,35 @@ class KonkursBot:
                     'text': "✅ Obuna tasdiqlandi!",
                     'show_alert': False
                 })
-                self.edit_to_main_menu(chat_id, message_id)
+                self.edit_to_main_menu(chat_id, message.get('message_id'))
             else:
                 self.telegram_api('answerCallbackQuery', {
                     'callback_query_id': cb_id,
                     'text': "⚠️ Hali barcha kanallarga obuna bo'lmadingiz!",
                     'show_alert': True
                 })
-                self.prompt_mandatory_subscription(chat_id, unsubscribed, message_id)
+                self.prompt_mandatory_subscription(chat_id, unsubscribed, message.get('message_id'))
             return
 
         if data == 'admin_panel' and self.is_admin(user_id):
             self.db.clear_state(user_id)
-            self.send_admin_panel(chat_id, message_id)
+            self.send_admin_panel(chat_id, message.get('message_id'))
             self.telegram_api('answerCallbackQuery', {'callback_query_id': cb_id})
             return
 
         if data == 'admin_stats' and self.is_admin(user_id):
-            self.send_admin_stats(chat_id, message_id)
+            self.send_admin_stats(chat_id, message.get('message_id'))
             self.telegram_api('answerCallbackQuery', {'callback_query_id': cb_id})
             return
 
         if data == 'admin_channels_menu' and self.is_admin(user_id):
             self.db.clear_state(user_id)
-            self.send_admin_channels_menu(chat_id, message_id)
+            self.send_admin_channels_menu(chat_id, message.get('message_id'))
             self.telegram_api('answerCallbackQuery', {'callback_query_id': cb_id})
             return
 
         if data == 'admin_list_channels' and self.is_admin(user_id):
-            self.send_admin_list_channels(chat_id, message_id)
+            self.send_admin_list_channels(chat_id, message.get('message_id'))
             self.telegram_api('answerCallbackQuery', {'callback_query_id': cb_id})
             return
 
@@ -1121,7 +1041,7 @@ class KonkursBot:
 
             self.telegram_api('editMessageText', {
                 'chat_id': chat_id,
-                'message_id': message_id,
+                'message_id': message.get('message_id'),
                 'text': msg,
                 'parse_mode': 'HTML',
                 'reply_markup': json.dumps(keyboard)
@@ -1145,7 +1065,7 @@ class KonkursBot:
 
             self.telegram_api('editMessageText', {
                 'chat_id': chat_id,
-                'message_id': message_id,
+                'message_id': message.get('message_id'),
                 'text': msg,
                 'parse_mode': 'HTML',
                 'reply_markup': json.dumps(keyboard)
@@ -1154,7 +1074,7 @@ class KonkursBot:
             return
 
         if data == 'admin_del_channel' and self.is_admin(user_id):
-            self.send_admin_delete_channel_menu(chat_id, message_id)
+            self.send_admin_delete_channel_menu(chat_id, message.get('message_id'))
             self.telegram_api('answerCallbackQuery', {'callback_query_id': cb_id})
             return
 
@@ -1167,7 +1087,7 @@ class KonkursBot:
                 'text': "✅ Kanal o'chirildi!",
                 'show_alert': True
             })
-            self.send_admin_delete_channel_menu(chat_id, message_id)
+            self.send_admin_delete_channel_menu(chat_id, message.get('message_id'))
             return
 
         unsubscribed_mandatory = self.check_global_mandatory_subscription(user_id)
@@ -1177,11 +1097,11 @@ class KonkursBot:
                 'text': "⚠️ Avval majburiy kanallarga obuna bo'ling!",
                 'show_alert': True
             })
-            self.prompt_mandatory_subscription(chat_id, unsubscribed_mandatory, message_id)
+            self.prompt_mandatory_subscription(chat_id, unsubscribed_mandatory, message.get('message_id'))
             return
 
         if data == 'top_channels':
-            self.send_top_channels(chat_id, message_id)
+            self.send_top_channels(chat_id, message.get('message_id'))
             self.telegram_api('answerCallbackQuery', {'callback_query_id': cb_id})
             return
 
@@ -1201,7 +1121,7 @@ class KonkursBot:
 
             self.telegram_api('editMessageText', {
                 'chat_id': chat_id,
-                'message_id': message_id,
+                'message_id': message.get('message_id'),
                 'text': msg,
                 'parse_mode': 'HTML',
                 'reply_markup': json.dumps(keyboard)
@@ -1212,7 +1132,7 @@ class KonkursBot:
         if data == 'back_to_main':
             self.db.clear_state(user_id)
             self.db.clear_state(chat_id)
-            self.edit_to_main_menu(chat_id, message_id)
+            self.edit_to_main_menu(chat_id, message.get('message_id'))
             self.telegram_api('answerCallbackQuery', {'callback_query_id': cb_id})
             return
 
@@ -1271,7 +1191,7 @@ class KonkursBot:
                         'text': "🎉 Ovozingiz qabul qilindi!",
                         'show_alert': True
                     })
-                    self.send_contest_details(chat_id, contest_id, message_id)
+                    self.send_contest_details(chat_id, contest_id, message.get('message_id'))
                 else:
                     self.telegram_api('answerCallbackQuery', {
                         'callback_query_id': cb_id,
@@ -1344,7 +1264,6 @@ class KonkursBot:
 
         prize_html = entities_to_html(message.get('text', ''), message.get('entities', []))
 
-        # RAM, Local File va MongoDB ga to'liq va sinxron sinxronlash
         self.db.set_state(user_id, 'awaiting_create_battle_post', {'prize': prize_html})
         self.db.set_state(chat_id, 'awaiting_create_battle_post', {'prize': prize_html})
 
@@ -1824,7 +1743,6 @@ class KonkursBot:
 
             keyboard = {'inline_keyboard': []}
 
-            # Qatnashuvchilar tugmalari
             for p in participants:
                 p_name = p.get('user_name') or 'Ishtirokchi'
                 vote_url = f"https://t.me/{self.bot_username}?start=vote_{contest_id}_{p['id']}"
@@ -1833,7 +1751,6 @@ class KonkursBot:
                     {'text': btn_text, 'url': vote_url}
                 ])
 
-            # Qo'shilish va Natijalar tugmalari
             keyboard['inline_keyboard'].append([
                 {'text': "🟢 Konkursga Qo'shilish ➕", 'url': join_url}
             ])

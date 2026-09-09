@@ -312,7 +312,7 @@ class Database:
         ]
         return list(self.db.channels.aggregate(pipeline))
 
-    def create_contest(self, channel_id, post_message_id, prize=None, has_media=False):
+    def create_contest(self, channel_id, post_message_id, prize=None):
         try:
             contest_id = self.get_next_sequence("contest_id")
             channel_id_str = str(channel_id)
@@ -322,7 +322,6 @@ class Database:
                 "post_message_id": int(post_message_id),
                 "prize": prize or "Sir 🤫",
                 "status": "active",
-                "has_media": bool(has_media),
                 "created_at": datetime.utcnow(),
                 "ended_at": None
             })
@@ -609,20 +608,6 @@ class KonkursBot:
             return False
         return self.db.is_update_processed(update_id)
 
-    def edit_contest_message(self, chat_id, message_id, text, reply_markup, has_media=False):
-        params = {
-            'chat_id': chat_id,
-            'message_id': message_id,
-            'parse_mode': 'HTML',
-            'reply_markup': reply_markup
-        }
-        if has_media:
-            params['caption'] = text
-            return self.telegram_api('editMessageCaption', params)
-        else:
-            params['text'] = text
-            return self.telegram_api('editMessageText', params)
-
     def format_contest_results(self, participants):
         res_text = "<blockquote>🏆 <b>KONKURS NATIJALARI</b> 🏆\n\n"
         if not participants:
@@ -691,8 +676,7 @@ class KonkursBot:
         self.db.save_channel(chat_id, title, username)
 
         if '#boshlash' in text.lower():
-            has_media = 'photo' in post or 'video' in post or 'document' in post or 'audio' in post or 'animation' in post
-            contest_id = self.db.create_contest(chat_id, message_id, prize="Sir 🤫", has_media=has_media)
+            contest_id = self.db.create_contest(chat_id, message_id, prize="Sir 🤫")
             if not contest_id or contest_id <= 0:
                 self.telegram_api('sendMessage', {
                     'chat_id': chat_id,
@@ -703,25 +687,18 @@ class KonkursBot:
 
             join_url = f"https://t.me/{self.bot_username}?start=join_{contest_id}"
 
-            post_text = "<blockquote>🏆 <b>BATL Boshlandi🥳</b>\n\n"
-            post_text += "❗ Konkurs shartlari shu kanalga obuna bo'lish va do'stlaringiz sizga ovoz berishini so'rashdan iborat. Agar kanalga qo'shilib ovoz berib chiqib ketsa ovozi avtomatik olib tashlanadi ⛔\n\n"
-            post_text += "🎁 <b>Yutuq:</b> Sir 🤫\n\n"
-            post_text += "➕ Konkursga qo'shilish uchun quyidagi tugmani bosing 👇</blockquote>"
-
             keyboard = {
                 'inline_keyboard': [
-                    [{'text': " Konkursga Qo'shilish ➕", 'url': join_url}],
-                    [{'text': " Natijalar 📊", 'callback_data': f"results_{contest_id}"}]
+                    [{'text': "🟢 Konkursga Qo'shilish ➕", 'url': join_url}],
+                    [{'text': "🔴 Natijalar 📊", 'callback_data': f"results_{contest_id}"}]
                 ]
             }
 
-            self.edit_contest_message(
-                chat_id,
-                message_id,
-                post_text,
-                json.dumps(keyboard),
-                has_media=has_media
-            )
+            self.telegram_api('editMessageReplyMarkup', {
+                'chat_id': chat_id,
+                'message_id': message_id,
+                'reply_markup': json.dumps(keyboard)
+            })
             return
 
         if '#end' in text.lower():
@@ -783,7 +760,8 @@ class KonkursBot:
         chat_id = chat.get('id')
         chat_type = chat.get('type', 'private')
 
-        # Xavfsizlik filtri: Agar xabar kanal (channel) yoki guruhdan kelsa, shaxsiy chat emasligi uchun e'tiborga olinmaydi
+        # XAVFSIZLIK FILTRI: Faqat shaxsiy (private) chatdagi xabarlarni qayta ishlaydi.
+        # Kanallar va guruhlardan kelgan xabarlar bot menusini ishga tushirmaydi!
         if chat_type != 'private':
             return
 
@@ -794,7 +772,8 @@ class KonkursBot:
         user_id = from_user['id']
         text = message.get('text', '').strip()
 
-        user_state = self.db.get_state(user_id) or self.db.get_state(chat_id)
+        # State faqat user_id bo'yicha olinadi
+        user_state = self.db.get_state(user_id)
 
         if text == '/cancel':
             self.db.clear_state(user_id)
@@ -841,10 +820,6 @@ class KonkursBot:
         unsubscribed_mandatory = self.check_global_mandatory_subscription(user_id)
         if unsubscribed_mandatory:
             self.prompt_mandatory_subscription(chat_id, unsubscribed_mandatory)
-            return
-
-        if '#end' in text.lower():
-            self.send_main_menu(chat_id)
             return
 
         if text.startswith('/start'):
@@ -954,18 +929,79 @@ class KonkursBot:
         chat = message.get('chat', {})
         chat_id = chat.get('id')
         chat_type = chat.get('type', 'private')
-
-        # Xavfsizlik: Kanaldagi inline tugmalar bosilsa (masalan results) ruxsat beriladi, lekin oddiy menyular faqat shaxsiy chatda ishlaydi
         user_id = cb['from']['id']
         data = cb['data']
 
+        # XAVFSIZLIK: Kanaldagi post inline tugmalari bosilganda:
+        if chat_type != 'private':
+            if data.startswith('results_') or data.startswith('contest_'):
+                contest_id = int(''.join(filter(str.isdigit, data)) or 0)
+                contest = self.db.get_contest_by_id(contest_id)
+
+                if not contest:
+                    self.telegram_api('answerCallbackQuery', {
+                        'callback_query_id': cb_id,
+                        'text': "❌ Konkurs topilmadi.",
+                        'show_alert': True
+                    })
+                    return
+
+                if contest.get('status') == 'ended':
+                    self.telegram_api('answerCallbackQuery', {
+                        'callback_query_id': cb_id,
+                        'text': "🔴 Ushbu konkurs allaqachon yakunlangan!",
+                        'show_alert': True
+                    })
+                    return
+
+                channel_id = contest.get('channel_id')
+                if not self.is_channel_admin(user_id, channel_id):
+                    self.telegram_api('answerCallbackQuery', {
+                        'callback_query_id': cb_id,
+                        'text': "❌ Ushbu tugmani faqat kanal adminlari yoki egasi bosishi mumkin!",
+                        'show_alert': True
+                    })
+                    return
+
+                self.telegram_api('answerCallbackQuery', {
+                    'callback_query_id': cb_id,
+                    'text': "✅ Natijalar e'lon qilindi va konkurs yakunlandi!"
+                })
+
+                participants = self.db.get_participants_by_contest(contest_id)
+                self.db.end_contest(contest_id)
+
+                res_text = self.format_contest_results(participants)
+
+                target_chat_id = contest.get('channel_id') or chat_id
+                reply_msg_id = contest.get('post_message_id')
+
+                send_params = {
+                    'chat_id': target_chat_id,
+                    'text': res_text,
+                    'parse_mode': 'HTML'
+                }
+                if reply_msg_id:
+                    send_params['reply_to_message_id'] = reply_msg_id
+
+                self.telegram_api('sendMessage', send_params)
+                return
+            else:
+                self.telegram_api('answerCallbackQuery', {
+                    'callback_query_id': cb_id,
+                    'text': "⚠️ Ushbu bo'limdan foydalanish uchun botga shaxsiy xabar yuboring!",
+                    'show_alert': True
+                })
+                return
+
+        # FAQAT SHAXSIY CHATDAGI CALLBACK QUERIES:
         if data == 'create_battle':
             self.db.set_state(user_id, 'awaiting_contest_prize')
-            self.db.set_state(chat_id, 'awaiting_contest_prize')
 
             msg = "Batl yaratish boshlandi\n"
             msg += "Yutuq nomi nima \n"
             msg += "Yozing \n"
+            msg += "Musol uchun bu 👆🏻\n\n"
             msg += "❌ Bekor qilish uchun /cancel ni bosing."
 
             keyboard = {
@@ -1026,7 +1062,6 @@ class KonkursBot:
 
         if data == 'admin_add_channel' and self.is_admin(user_id):
             self.db.set_state(user_id, 'awaiting_add_mand_channel')
-            self.db.set_state(chat_id, 'awaiting_add_mand_channel')
 
             msg = "📢 <b>MAJBURIY OBUNAGA KANAL QO'SHISH</b>\n\n"
             msg += "Iltimos, kanaldagi istalgan postni <b>forward</b> qilib yuboring yoki kanal username-ini yuboring (masalan: <code>@education_coders</code>).\n\n"
@@ -1050,7 +1085,6 @@ class KonkursBot:
 
         if data == 'admin_broadcast_channels' and self.is_admin(user_id):
             self.db.set_state(user_id, 'awaiting_channel_broadcast_msg')
-            self.db.set_state(chat_id, 'awaiting_channel_broadcast_msg')
 
             msg = "📣 <b>KANALLARGA XABAR YUBORISH</b>\n\n"
             msg += "Iltimos, bot admin bo'lgan barcha kanallarga yubormoqchi bo'lgan xabaringizni (matn, rasm, video, audio) yuboring:\n\n"
@@ -1106,8 +1140,7 @@ class KonkursBot:
 
         if data == 'check_battle':
             self.db.set_state(user_id, 'awaiting_check_channel')
-            self.db.set_state(chat_id, 'awaiting_check_channel')
-            
+
             msg = "🔍 <b>OVOZ BATL TEKSHIRISH</b> 🔍\n\n"
             msg += "Iltimos, kanaldagi konkurs postini (#boshlash bilan boshlangan) forward qilib yuboring.\n\n"
             msg += "❌ Bekor qilish uchun /cancel yoki quyidagi tugmani bosing"
@@ -1130,7 +1163,6 @@ class KonkursBot:
 
         if data == 'back_to_main':
             self.db.clear_state(user_id)
-            self.db.clear_state(chat_id)
             self.edit_to_main_menu(chat_id, message.get('message_id'))
             self.telegram_api('answerCallbackQuery', {'callback_query_id': cb_id})
             return
@@ -1264,7 +1296,6 @@ class KonkursBot:
         prize_html = entities_to_html(message.get('text', ''), message.get('entities', []))
 
         self.db.set_state(user_id, 'awaiting_create_battle_post', {'prize': prize_html})
-        self.db.set_state(chat_id, 'awaiting_create_battle_post', {'prize': prize_html})
 
         msg = f"✅ <b>Yutuq saqlandi:</b> {prize_html}\n\n"
         msg += "Endi, batl o'tkazmoqchi bo'lgan kanalingizdagi postni <b>forward</b> qilib yuboring yoki kanalga yubormoqchi bo'lgan xabaringizni jo'nating.\n\n"
@@ -1285,7 +1316,7 @@ class KonkursBot:
         })
 
     def process_create_battle_post_input(self, chat_id, user_id, message):
-        user_state = self.db.get_state(user_id) or self.db.get_state(chat_id)
+        user_state = self.db.get_state(user_id)
         prize = "Sir 🤫"
 
         if user_state and user_state.get('temp_data_decoded'):
@@ -1301,7 +1332,6 @@ class KonkursBot:
                     pass
 
         self.db.clear_state(user_id)
-        self.db.clear_state(chat_id)
         
         text = message.get('text') or message.get('caption') or ''
         if '#boshlash' not in text.lower():
@@ -1311,7 +1341,6 @@ class KonkursBot:
                 'parse_mode': 'HTML'
             })
             self.db.set_state(user_id, 'awaiting_create_battle_post', {'prize': prize})
-            self.db.set_state(chat_id, 'awaiting_create_battle_post', {'prize': prize})
             return
 
         target_channel_id = None
@@ -1332,8 +1361,6 @@ class KonkursBot:
             self.send_main_menu(chat_id)
             return
 
-        has_media = 'photo' in message or 'video' in message or 'document' in message or 'audio' in message or 'animation' in message
-
         sent_msg = self.telegram_api('copyMessage', {
             'chat_id': target_channel_id,
             'from_chat_id': chat_id,
@@ -1349,13 +1376,9 @@ class KonkursBot:
 
         if sent_msg and sent_msg.get('ok'):
             post_msg_id = sent_msg['result']['message_id']
-            contest_id = self.db.create_contest(target_channel_id, post_msg_id, prize=prize, has_media=has_media)
+            contest_id = self.db.create_contest(target_channel_id, post_msg_id, prize=prize)
 
             join_url = f"https://t.me/{self.bot_username}?start=join_{contest_id}"
-            post_text = "<blockquote>🏆 <b>BATL Boshlandi🥳</b>\n\n"
-            post_text += f"🎁 <b>Yutuq:</b> {prize}\n\n"
-            post_text += "❗ Konkurs shartlari shu kanalga obuna bo'lish va do'stlaringiz sizga ovoz berishini so'rashdan iborat. Agar kanalga qo'shilib ovoz berib chiqib ketsa ovozi avtomatik olib tashlanadi ⛔\n\n"
-            post_text += "➕ Konkursga qo'shilish uchun quyidagi tugmani bosing 👇</blockquote>"
 
             keyboard = {
                 'inline_keyboard': [
@@ -1364,13 +1387,11 @@ class KonkursBot:
                 ]
             }
 
-            self.edit_contest_message(
-                target_channel_id,
-                post_msg_id,
-                post_text,
-                json.dumps(keyboard),
-                has_media=has_media
-            )
+            self.telegram_api('editMessageReplyMarkup', {
+                'chat_id': target_channel_id,
+                'message_id': post_msg_id,
+                'reply_markup': json.dumps(keyboard)
+            })
 
             self.telegram_api('sendMessage', {
                 'chat_id': chat_id,
@@ -1730,6 +1751,10 @@ class KonkursBot:
             })
 
     def update_contest_post(self, contest_id):
+        """
+        Kanal postining MATNIGA TEGMASDAN faqat tugmalarni (reply_markup) yangilaydi!
+        Bu kanal postining o'zgarib ketishini to'liq oldini oladi.
+        """
         try:
             contest = self.db.get_contest_by_id(contest_id)
             if not contest or not contest.get('channel_id') or not contest.get('post_message_id'):
@@ -1737,11 +1762,10 @@ class KonkursBot:
 
             participants = self.db.get_contest_participants(contest_id)
             join_url = f"https://t.me/{self.bot_username}?start=join_{contest_id}"
-            prize = contest.get('prize', 'Sir 🤫')
-            has_media = contest.get('has_media', False)
 
             keyboard = {'inline_keyboard': []}
 
+            # Qatnashuvchilar tugmalari
             for p in participants:
                 p_name = p.get('user_name') or 'Ishtirokchi'
                 vote_url = f"https://t.me/{self.bot_username}?start=vote_{contest_id}_{p['id']}"
@@ -1750,6 +1774,7 @@ class KonkursBot:
                     {'text': btn_text, 'url': vote_url}
                 ])
 
+            # Qo'shilish va Natijalar tugmalari
             keyboard['inline_keyboard'].append([
                 {'text': "🟢 Konkursga Qo'shilish ➕", 'url': join_url}
             ])
@@ -1757,24 +1782,17 @@ class KonkursBot:
                 {'text': "🔴 Natijalar 📊", 'callback_data': f"results_{contest_id}"}
             ])
 
-            post_text = "<blockquote>🏆 <b>BATL Boshlandi🥳</b>\n\n"
-            post_text += f"🎁 <b>Yutuq:</b> {prize}\n\n"
-            post_text += "❗ Konkurs shartlari shu kanalga obuna bo'lish va do'stlaringiz sizga ovoz berishini so'rashdan iborat. Agar kanalga qo'shilib ovoz berib chiqib ketsa ovozi avtomatik olib tashlanadi ⛔\n\n"
-            post_text += "➕ Konkursga qo'shilish uchun quyidagi tugmani bosing 👇</blockquote>"
-
-            self.edit_contest_message(
-                contest['channel_id'],
-                contest['post_message_id'],
-                post_text,
-                json.dumps(keyboard),
-                has_media=has_media
-            )
+            # Faqat va faqat tugmalarni (keyboard) yangilaymiz!
+            self.telegram_api('editMessageReplyMarkup', {
+                'chat_id': contest['channel_id'],
+                'message_id': contest['post_message_id'],
+                'reply_markup': json.dumps(keyboard)
+            })
         except Exception as e:
             logging.error(f"Error in update_contest_post: {e}", exc_info=True)
 
     def process_check_channel_input(self, chat_id, user_id, message):
         self.db.clear_state(user_id)
-        self.db.clear_state(chat_id)
         contest = None
 
         if 'forward_from_chat' in message:
@@ -2009,7 +2027,6 @@ class KonkursBot:
 
         self.db.add_mandatory_channel(channel_id, title, username)
         self.db.clear_state(user_id)
-        self.db.clear_state(chat_id)
 
         self.telegram_api('sendMessage', {
             'chat_id': chat_id,
@@ -2021,7 +2038,6 @@ class KonkursBot:
 
     def process_channel_broadcast_input(self, chat_id, user_id, message):
         self.db.clear_state(user_id)
-        self.db.clear_state(chat_id)
 
         status_msg = self.telegram_api('sendMessage', {
             'chat_id': chat_id,
